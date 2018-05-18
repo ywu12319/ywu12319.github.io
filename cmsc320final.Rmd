@@ -1,0 +1,277 @@
+---
+title: "What Kind Of Soccer Players Should I Buy?"
+author: "Yexin Wu"
+date: "5/17/2018"
+output: html_document
+---
+## European Soccer Player Analysis (What kind of soccer players should I buy)
+
+## Introduction:
+   
+   Modern soccer is totally different from the past. Nowdays, moderen scorrer not only need huge fundings but also
+   professional analysis. Many soccer club such as  [AC MILAN](http://www.dailymail.co.uk/sport/football/article-4843522/AC-Milan-confirm-summer-spending-total-210m.html)
+   they spent more than 200 millon dollars. But Eventually they just ranked 6th in Italy's SeriesA. Soccer club      
+   manager takes more and more important role in the Club. He should know how to use limited fundings to buy the soccer
+   player they need. He should balance the budget to satisfy [FFP](https://en.wikipedia.org/wiki/UEFA_Financial_Fair_Play_Regulations). 
+   
+   Thus, the purpose of this project is to analyze which soccer player I should buy if I were a soccer manager of the club. 
+   
+   
+## Required Tools
+   R markdown, library DBI,dplyr and so on. You can see them in the setup chunk.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+db <- DBI::dbConnect(RSQLite::SQLite(), "~/Desktop/cmsc320final/database.sqlite")
+library(DBI)
+library(dplyr)
+library(tidyverse)
+library(ggthemes)
+library(RSQLite)
+```
+
+## Non-GoalKeeper Player Analysis
+
+
+## 1. Get Start
+  First, download the dataset from [Kaggle](https://www.kaggle.com/hugomathien/soccer/kernels?sortBy=hotness&group=everyone&pageSize=20&datasetId=63&language=R). This will be in the form of a  sql called database.sql. Now, we will need to load our sql file into a form that we can manipulate using R. To do this, we will use the RSQLite library. 
+
+
+We I prepared data, There is a lot of missing data, the way I treated them is just set them to be zero
+```{r player-analysis-data prepare}
+con <- dbConnect(SQLite(), dbname="~/Desktop/cmsc320final/database.sqlite")
+players <- tbl_df(dbGetQuery(con,"SELECT * FROM player"))
+player_attributes <- tbl_df(dbGetQuery(con,"SELECT * FROM player_attributes"))
+
+## clear data
+player_attributes$attacking_work_rate[player_attributes$attacking_work_rate == "le" |
+                            player_attributes$attacking_work_rate == "stoc" |
+                            player_attributes$attacking_work_rate == "y" |
+                            player_attributes$attacking_work_rate == "None"] <- NA
+
+## players contain information about plyers basic information such as 
+## birthday, age and so on. Players_attributes contain information about
+## the players' over_all ratings information each match
+players <- players %>%   
+      inner_join(player_attributes, by = "player_api_id") %>% 
+      select(-id.y, -player_fifa_api_id.y) %>%
+      filter(gk_diving<30) %>%   ## we are considering Non-goalKeeper Player
+      select(-starts_with("gk_")) %>%  
+      mutate(year = as.factor(format(as.Date(date),'%Y'))) %>%    ## change the format of year data
+      mutate(date = as.Date(date)) %>%
+      mutate(birthday = as.Date(birthday)) %>%
+      mutate(age = floor(as.numeric(date-birthday)/365))    ## calculate the age when player play the game
+           
+players
+
+```
+
+
+
+## Part(1) Age's influence.
+A big problem which Soccer managers are always faced is Should I buy the the old players? Usually, old players always 
+have a lot of experience, can teach young players. However, their performance may be not so good due to health reason.
+Therefore, I draw the distrbution of Overall_rating conditioned on the age to reveal some information.
+
+When I draw the plot, I will focuse on players whose age are between (28 - 37).  Since my question is should I buy old 
+players ? ,young players will not be considered.
+
+Conclusion: 
+(1) Firstly, I use violin-grpah to show the distribution of overall_rating conditioned on age. From the graph,
+the variance of distribution decreaes acroos years. And we can see the mean doesn't change a lot. You can not expect too much of those old players, they cannot bring too much surprise. But their performance is much more stable than young players'.
+
+(2) Secondly, I draw the linear regression line, which will make the above conclusion more obvious.
+
+
+```{r plot over_all rating dist}
+players %>% filter( age >= 28) %>%
+  ggplot(aes(x=factor(age), y=overall_rating)) + geom_violin() + 
+    labs(title="Overall_rating Across Age",
+         x = "age",
+         y = "overall_rating")
+```
+
+```{r plot(2)}
+players %>% filter( age >= 28) %>%
+  ggplot(aes(x=age, y=overall_rating)) + geom_point() + geom_smooth(method = lm) +
+    labs(title="Overall_rating Across Age",
+         x = "age",
+         y = "overall_rating")
+```
+
+
+
+## Part(3) Non-goal Player-model predict (Linear Model Estimate)
+
+The purpose of this part is to estimate players' overall_rating based on various attributes. The reason
+why I introduced this part is beacuse if you were a soccer manager of club, in the Transfer Martket you want to buy a 
+player. You should use soccers' attributes to estimate players' performance beforing decding if you want to 
+buy this player. Firstly, we use Linear Model to approach the estimation and then we use random forest tree method 
+to approach. 
+
+Now we use linear model to estimate football players' over_all ratings, After getting the STAT of linear fit. I filter those attrbutes that have less than 0.05 p.value. The reason is that they cannot reject the Null Hypothesis: There are no relations between them 
+
+Then after arranging by estimate, We find attacking_work_rate, potential,age,reactions, ball_control contributes a lot 
+to the over_all rating. Therefore, if I were the manager, I will focus more on these 5 parts when choosing players.
+
+```{r Non-goal Player-model predict} 
+auto_fit <- lm(overall_rating ~ potential+preferred_foot+attacking_work_rate+
+              crossing+finishing+age+vision+height+weight+curve+dribbling+volleys+short_passing+
+                long_passing+free_kick_accuracy+ball_control+agility+reactions+balance+shot_power+
+                jumping + heading_accuracy+balance+sprint_speed+acceleration , data = players)
+auto_fit_status <- auto_fit %>% broom::tidy()
+auto_fit_status %>% filter(p.value < 0.05) %>% arrange(desc(estimate))
+
+
+```
+
+## part(4) Will Player do better than last year?
+
+  Another important task of soccer manger is that renewal a soccer player. Should I give him a higher salary? So, He should consider whether the player will do better than last year or not. If not, I may end the contract.
+
+#(1) 
+  
+  I choose the past 3 years' performance as estimnators to estimate next year's performance. Fristly
+I need to rearrange my data to satisfy my need. I filter my data first because I just want recent years' 
+data. Then I calculate the average of over_all ratings each year. Then I spread them. But there are still 
+some problems, Some players may not have all those 4 years' data. What I implemented is just to delete all of
+them.
+
+```{r performance_estimate_pre1}
+  players2 <- players %>% filter(year == "2012" |
+                                 year == "2013" |
+                                 year == "2014" |
+                                 year == "2015" | 
+                                 year == "2016" )
+  players3 <- players2 %>% group_by(year,id.x) %>% mutate(av_overall_rating = sum(overall_rating)/n()) %>% ungroup()
+  ## calculate the average 
+  players3 <- players3 %>% distinct(id.x, year, .keep_all = TRUE) ##delete the duplicate for next step
+  players4 <- players3 %>%      ## seperate them
+    select(id.x,year,av_overall_rating) %>%
+    tidyr::spread(year,av_overall_rating)
+  players4 <- players4 %>% drop_na()      ## drop NA
+  players4
+```
+
+
+
+
+#(2) 
+In this step, we need to prepare outcome_df. We use value of 2016-2015 as our outcome
+
+
+```{r compararble data}
+outcome_df <- players4 %>%
+  mutate(diff = `2016` - `2015`) %>%
+  mutate(Direction = ifelse(diff>0, "up", "down")) %>%
+  select(id.x, Direction)
+outcome_df
+```
+
+
+#(3) 
+In this step,we need to prepare our predictor data, I will use the difference between two years as estimators. This
+is just like what we did in the Project(3).
+
+```{r  performance_estimate_pre2}
+players5 <- players4 %>% select(-2016)
+matrix_1 <- players4 %>%
+  select(-id.x) %>%
+  as.matrix() %>%
+  .[,-1]
+
+
+matrix_2 <- players4 %>%
+  select(-id.x) %>%
+  as.matrix() %>%
+  .[,-ncol(.)]
+
+diff_df <- (matrix_1 - matrix_2) %>%
+  magrittr::set_colnames(NULL) %>%
+  as_data_frame() %>%
+  mutate(id.x = players4$id.x)
+
+final_df <- diff_df %>%
+  inner_join(outcome_df %>% select(id.x, Direction), by="id.x") %>%
+  mutate(Direction=factor(Direction, levels=c("down", "up")))
+final_df
+
+```
+
+## use Random Forest tree to estimate
+First we need to seperate data into trainning part and test_data_part. In this case, 80% will be trainning dataset
+and the rest 20% will be test dataset
+```{r split_sample_into_test_and_train}
+set.seed(1234)  ##sample_frac will be random choice!!!
+test_random_forest_df <- final_df %>%
+  group_by(Direction) %>%
+  sample_frac(.2) %>%
+  ungroup()
+train_random_forest_df <- final_df %>%
+  anti_join(test_random_forest_df, by="id.x")
+```
+
+
+## implement the Random Forest tree
+Prose: 
+When I use the Randmon Forest tree to estimate, and then use trainning data and test data to test. Both
+error rates are 0%. This model can help soccer club manager easily,accurately, and quciky make the judgement
+whether a player will perform better in the next year ot not.
+```{r}
+library(randomForest)
+library(tree)
+rf <- randomForest(Direction~., data=train_random_forest_df %>% select(-id.x)) ## we don't want id.x as a preictor
+rf
+```
+
+```{r general ValiDation Experiment_rf}
+rf_test_predictions <- predict(rf, newdata=test_random_forest_df %>% select(-id.x),type="class")
+
+table(pred=rf_test_predictions, observed=test_random_forest_df$Direction)
+
+```
+
+
+
+## K-FOLD-CROSS-VALIDATION EXPERIMENT
+And now, We use a much more stronger test to test my data. I find the error is still 0%.
+
+
+```{r K-FOLD-CROSS-VALIDATION}
+library(ISLR)
+library(cvTools)
+library(tree)
+set.seed(1234) #should we use this??
+
+fold_indices <- cvFolds(n=nrow(final_df), K=10)
+
+error_rates <- sapply(1:10, function(fold_index){
+  test_indices <- which(fold_indices$which == fold_index)
+  test_set <- final_df[test_indices,] ## we use code from final_df, this kind of indices used for test
+  
+  ## use other indices for train data
+  train_set <- final_df[-test_indices,] 
+  
+  frf <- randomForest(Direction~., data=train_set %>% select(-id.x))
+  frf_predit <- predict(frf, newdata=test_set %>% select(-id.x),type="class")
+  rf_error <- mean(test_set$Direction != frf_predit)
+  
+  rf_error
+  })
+error_rates <- as.data.frame(t(error_rates))
+error_rates <- error_rates %>%
+  mutate(fold=1:n()) %>%
+  gather(method,error,-fold)
+
+error_rates %>%
+  knitr::kable("html")
+
+
+```
+
+
+## Conclusion:
+Becoming a good soccer manager is not such a easy thing. They may also need to consider club's funding situation when choosing Player. But based on my analysis, old player is not a bad choice. And also Using the random forest tree will be a nice approach. Here is a link:
+[How to Become A Good soccer Manager](https://www.wikihow.com/Become-a-Pro-Football(Soccer)-Manager)
+
